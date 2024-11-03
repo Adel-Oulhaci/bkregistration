@@ -9,70 +9,95 @@ function QRScanner() {
   const [error, setError] = useState('');
   const [isScanning, setIsScanning] = useState(false);
   const [checkInStatus, setCheckInStatus] = useState('');
-  const [html5QrCode, setHtml5QrCode] = useState(null);
+  const [cameraList, setCameraList] = useState([]);
+  const [selectedCamera, setSelectedCamera] = useState('');
+  const [debugInfo, setDebugInfo] = useState('');
+
+  const addDebugInfo = (info) => {
+    setDebugInfo(prev => `${prev}\n${info}`);
+    console.log(info);
+  };
 
   useEffect(() => {
-    // Initialize scanner instance
-    const scanner = new Html5Qrcode('reader');
-    setHtml5QrCode(scanner);
-
-    return () => {
-      if (scanner && scanner.isScanning) {
-        scanner.stop().catch(err => console.error('Error stopping scanner:', err));
+    // List available cameras on component mount
+    const getCameras = async () => {
+      try {
+        addDebugInfo('Requesting camera list...');
+        const devices = await Html5Qrcode.getCameras();
+        addDebugInfo(`Found ${devices.length} cameras`);
+        setCameraList(devices);
+        if (devices.length > 0) {
+          setSelectedCamera(devices[devices.length - 1].id); // Usually back camera
+        }
+        devices.forEach(device => {
+          addDebugInfo(`Camera: ${device.label} (${device.id})`);
+        });
+      } catch (err) {
+        addDebugInfo(`Error getting cameras: ${err.message}`);
+        setError(`Error accessing cameras: ${err.message}`);
       }
     };
+
+    getCameras();
   }, []);
 
   const startScanning = async () => {
     try {
+      addDebugInfo('Starting scanner...');
       setError('');
       setIsScanning(true);
 
-      const cameras = await Html5Qrcode.getCameras();
-      if (cameras && cameras.length > 0) {
-        const camera = cameras[cameras.length - 1]; // Usually back camera
-        
-        await html5QrCode.start(
-          camera.id,
-          {
-            fps: 10,
-            qrbox: { width: 250, height: 250 },
-            aspectRatio: 1.0
-          },
-          async (decodedText) => {
-            await handleScanSuccess(decodedText);
-          },
-          (errorMessage) => {
-            console.log(errorMessage);
-          }
-        );
-      } else {
-        setError('No cameras found on your device');
+      if (!selectedCamera) {
+        throw new Error('No camera selected');
       }
+
+      addDebugInfo(`Initializing scanner with camera: ${selectedCamera}`);
+      const html5QrCode = new Html5Qrcode("reader");
+
+      const config = {
+        fps: 10,
+        qrbox: { width: 250, height: 250 },
+        aspectRatio: 1.0,
+        formatsToSupport: [Html5Qrcode.QrFormat.QR_CODE]
+      };
+
+      addDebugInfo('Starting camera stream...');
+      await html5QrCode.start(
+        selectedCamera,
+        config,
+        async (decodedText) => {
+          addDebugInfo(`QR Code detected: ${decodedText}`);
+          await handleScanSuccess(decodedText, html5QrCode);
+        },
+        (errorMessage) => {
+          addDebugInfo(`Scanning error: ${errorMessage}`);
+        }
+      );
+
+      addDebugInfo('Scanner started successfully');
     } catch (err) {
-      setError('Error accessing camera: ' + err.message);
+      addDebugInfo(`Error in startScanning: ${err.message}`);
+      setError(`Failed to start scanner: ${err.message}`);
       setIsScanning(false);
     }
   };
 
-  const handleScanSuccess = async (result) => {
+  const handleScanSuccess = async (result, scanner) => {
     try {
+      addDebugInfo('Processing scan result...');
       const scannedData = JSON.parse(result);
       
       if (!scannedData.id) {
         throw new Error('Invalid QR code format: missing ID');
       }
 
-      // Verify the registration in Firestore
       const docRef = doc(db, "registrations", scannedData.id);
       const docSnap = await getDoc(docRef);
 
       if (docSnap.exists()) {
         const data = docSnap.data();
         
-        // Verify email match
         if (data.email === scannedData.email) {
-          // Record check-in
           const now = new Date();
           const checkInData = {
             timestamp: now.toISOString(),
@@ -86,8 +111,8 @@ function QRScanner() {
             lastCheckIn: checkInData
           });
 
-          if (html5QrCode && html5QrCode.isScanning) {
-            await html5QrCode.stop();
+          if (scanner) {
+            await scanner.stop();
           }
           setIsScanning(false);
           setScanResult({
@@ -96,6 +121,7 @@ function QRScanner() {
             totalCheckIns: (data.totalCheckIns || 0) + 1
           });
           setCheckInStatus('Check-in successful!');
+          addDebugInfo('Check-in processed successfully');
         } else {
           setError('Invalid QR code data: email mismatch');
         }
@@ -103,18 +129,26 @@ function QRScanner() {
         setError('Registration not found in database');
       }
     } catch (err) {
+      addDebugInfo(`Error processing scan: ${err.message}`);
       setError(`Error processing QR code: ${err.message}`);
     }
   };
 
   const handleReset = async () => {
-    if (html5QrCode && html5QrCode.isScanning) {
-      await html5QrCode.stop();
+    addDebugInfo('Resetting scanner...');
+    try {
+      const html5QrCode = new Html5Qrcode("reader");
+      if (html5QrCode) {
+        await html5QrCode.stop();
+      }
+    } catch (err) {
+      addDebugInfo(`Error in reset: ${err.message}`);
     }
     setScanResult(null);
     setError('');
     setCheckInStatus('');
     setIsScanning(false);
+    setDebugInfo('');
   };
 
   return (
@@ -124,6 +158,14 @@ function QRScanner() {
           <div className="max-w-md mx-auto">
             <h2 className="text-2xl font-semibold mb-6">QR Code Scanner</h2>
             
+            {/* Debug Information */}
+            {debugInfo && (
+              <div className="mb-4 p-3 bg-gray-100 text-gray-700 rounded-md text-sm font-mono whitespace-pre-wrap">
+                Debug Info:
+                {debugInfo}
+              </div>
+            )}
+
             {error && (
               <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-md">
                 {error}
@@ -170,13 +212,29 @@ function QRScanner() {
             ) : (
               <div>
                 <div id="reader" className="mb-4"></div>
-                {!isScanning && (
-                  <button
-                    onClick={startScanning}
-                    className="block w-full bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600 transition-colors mb-4"
-                  >
-                    Start Scanner
-                  </button>
+                {cameraList.length > 0 && !isScanning && (
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Select Camera
+                    </label>
+                    <select
+                      value={selectedCamera}
+                      onChange={(e) => setSelectedCamera(e.target.value)}
+                      className="w-full p-2 border rounded-md mb-4"
+                    >
+                      {cameraList.map((camera) => (
+                        <option key={camera.id} value={camera.id}>
+                          {camera.label || `Camera ${camera.id}`}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={startScanning}
+                      className="block w-full bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600 transition-colors"
+                    >
+                      Start Scanner
+                    </button>
+                  </div>
                 )}
                 <Link
                   to="/"
