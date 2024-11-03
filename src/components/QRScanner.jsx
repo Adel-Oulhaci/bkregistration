@@ -1,105 +1,81 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { Html5QrcodeScanner } from 'html5-qrcode';
 import { Link } from 'react-router-dom';
-import QRCode from 'qrcode.react';
 import { db } from './firebase';
-import { collection, addDoc, query, where, getDocs } from 'firebase/firestore';
-import { Download } from 'lucide-react';
+import { doc, getDoc } from 'firebase/firestore';
 
-function RegistrationForm() {
-  const [formData, setFormData] = useState({
-    firstName: '',
-    lastName: '',
-    phone: '',
-    email: ''
-  });
-  const [submitted, setSubmitted] = useState(false);
+function QRScanner() {
+  const [scanResult, setScanResult] = useState(null);
   const [error, setError] = useState('');
-  const [qrCodeData, setQrCodeData] = useState('');
-  const [registrationId, setRegistrationId] = useState('');
+  const [isScanning, setIsScanning] = useState(true);
 
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    console.log('Form submission started');
-    
-    try {
-      // Check for existing email
-      console.log('Checking for duplicate email:', formData.email);
-      const registrationsRef = collection(db, "registrations");
-      const q = query(registrationsRef, where("email", "==", formData.email));
-      const querySnapshot = await getDocs(q);
-      
-      if (!querySnapshot.empty) {
-        console.log('Duplicate email found');
-        setError('This email is already registered.');
-        return;
-      }
-
-      console.log('Adding new registration to Firestore');
-      // Add new registration with check-in history
-      const docRef = await addDoc(registrationsRef, {
-        ...formData,
-        timestamp: new Date().toISOString(),
-        status: 'active',
-        checkIns: [], // Array to store check-in history
-        totalCheckIns: 0,
-        lastCheckIn: null
-      });
-
-      console.log('Document written with ID:', docRef.id);
-      setRegistrationId(docRef.id);
-
-      // Create QR code data
-      const qrData = {
-        id: docRef.id,
-        ...formData
-      };
-      
-      setQrCodeData(JSON.stringify(qrData));
-      setSubmitted(true);
-      console.log('Registration completed successfully');
-      
-    } catch (error) {
-      console.error('Error in form submission:', error);
-      setError('Failed to submit form. Please try again. Error: ' + error.message);
-    }
-  };
-
-  const downloadQRCode = () => {
-    const canvas = document.getElementById("qr-code");
-    if (canvas) {
-      const pngUrl = canvas
-        .toDataURL("image/png")
-        .replace("image/png", "image/octet-stream");
-      
-      const downloadLink = document.createElement("a");
-      downloadLink.href = pngUrl;
-      downloadLink.download = `qrcode-${formData.firstName}-${formData.lastName}.png`;
-      document.body.appendChild(downloadLink);
-      downloadLink.click();
-      document.body.removeChild(downloadLink);
-    }
-  };
-
-  const resetForm = () => {
-    setFormData({
-      firstName: '',
-      lastName: '',
-      phone: '',
-      email: ''
+  useEffect(() => {
+    console.log('Initializing QR scanner');
+    const scanner = new Html5QrcodeScanner('reader', {
+      qrbox: {
+        width: 250,
+        height: 250,
+      },
+      fps: 5,
     });
-    setSubmitted(false);
-    setQrCodeData('');
+
+    async function success(result) {
+      console.log('QR Code scanned:', result);
+      try {
+        const scannedData = JSON.parse(result);
+        console.log('Parsed QR data:', scannedData);
+
+        if (!scannedData.id) {
+          throw new Error('Invalid QR code format: missing ID');
+        }
+
+        // Verify the registration in Firestore
+        console.log('Fetching registration data from Firestore:', scannedData.id);
+        const docRef = doc(db, "registrations", scannedData.id);
+        const docSnap = await getDoc(docRef);
+
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          console.log('Registration found:', data);
+          
+          // Verify email match
+          if (data.email === scannedData.email) {
+            setIsScanning(false);
+            scanner.clear();
+            setScanResult(data);
+          } else {
+            console.log('Email mismatch');
+            setError('Invalid QR code data: email mismatch');
+          }
+        } else {
+          console.log('Registration not found');
+          setError('Registration not found in database');
+        }
+      } catch (err) {
+        console.error('Error processing QR code:', err);
+        setError(`Error processing QR code: ${err.message}`);
+      }
+    }
+
+    function error(err) {
+      console.warn('QR Scanner error:', err);
+      setError(`Scanner error: ${err}`);
+    }
+
+    scanner.render(success, error);
+
+    return () => {
+      if (isScanning) {
+        console.log('Cleaning up scanner');
+        scanner.clear();
+      }
+    };
+  }, [isScanning]);
+
+  const handleReset = () => {
+    setScanResult(null);
     setError('');
-    setRegistrationId('');
+    setIsScanning(true);
   };
 
   return (
@@ -107,112 +83,53 @@ function RegistrationForm() {
       <div className="relative py-3 sm:max-w-xl sm:mx-auto">
         <div className="relative px-4 py-10 bg-white mx-8 md:mx-0 shadow rounded-3xl sm:p-10">
           <div className="max-w-md mx-auto">
-            <div className="flex items-center space-x-5">
-              <div className="block pl-2 font-semibold text-xl self-start text-gray-700">
-                <h2 className="leading-relaxed">Registration Form</h2>
-              </div>
-            </div>
+            <h2 className="text-2xl font-semibold mb-6">QR Code Scanner</h2>
             
             {error && (
-              <div className="mt-4 p-3 bg-red-100 text-red-700 rounded-md">
+              <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-md">
                 {error}
+                <button
+                  onClick={handleReset}
+                  className="block w-full mt-2 text-center text-red-700 underline"
+                >
+                  Try Again
+                </button>
               </div>
             )}
-
-            {!submitted ? (
-              <form onSubmit={handleSubmit} className="divide-y divide-gray-200">
-                <div className="py-8 text-base leading-6 space-y-4 text-gray-700 sm:text-lg sm:leading-7">
-                  <div className="flex flex-col">
-                    <label className="leading-loose">First Name</label>
-                    <input
-                      type="text"
-                      name="firstName"
-                      value={formData.firstName}
-                      onChange={handleChange}
-                      className="px-4 py-2 border focus:ring-gray-500 focus:border-gray-900 w-full sm:text-sm border-gray-300 rounded-md focus:outline-none text-gray-600"
-                      required
-                    />
-                  </div>
-                  <div className="flex flex-col">
-                    <label className="leading-loose">Last Name</label>
-                    <input
-                      type="text"
-                      name="lastName"
-                      value={formData.lastName}
-                      onChange={handleChange}
-                      className="px-4 py-2 border focus:ring-gray-500 focus:border-gray-900 w-full sm:text-sm border-gray-300 rounded-md focus:outline-none text-gray-600"
-                      required
-                    />
-                  </div>
-                  <div className="flex flex-col">
-                    <label className="leading-loose">Phone Number</label>
-                    <input
-                      type="tel"
-                      name="phone"
-                      value={formData.phone}
-                      onChange={handleChange}
-                      className="px-4 py-2 border focus:ring-gray-500 focus:border-gray-900 w-full sm:text-sm border-gray-300 rounded-md focus:outline-none text-gray-600"
-                      required
-                    />
-                  </div>
-                  <div className="flex flex-col">
-                    <label className="leading-loose">Email</label>
-                    <input
-                      type="email"
-                      name="email"
-                      value={formData.email}
-                      onChange={handleChange}
-                      className="px-4 py-2 border focus:ring-gray-500 focus:border-gray-900 w-full sm:text-sm border-gray-300 rounded-md focus:outline-none text-gray-600"
-                      required
-                    />
-                  </div>
+            
+            {scanResult ? (
+              <div className="space-y-4">
+                <h3 className="text-lg font-medium">Scanned Data:</h3>
+                <div className="bg-gray-50 p-4 rounded-lg">
+                  <p><strong>First Name:</strong> {scanResult.firstName}</p>
+                  <p><strong>Last Name:</strong> {scanResult.lastName}</p>
+                  <p><strong>Email:</strong> {scanResult.email}</p>
+                  <p><strong>Phone:</strong> {scanResult.phone}</p>
                 </div>
-                <div className="pt-4 flex items-center space-x-4">
+                <div className="space-y-2">
                   <button
-                    type="submit"
-                    className="bg-blue-500 flex justify-center items-center w-full text-white px-4 py-3 rounded-md focus:outline-none hover:bg-blue-600"
+                    onClick={handleReset}
+                    className="block w-full bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600 transition-colors"
                   >
-                    Submit
+                    Scan Another Code
                   </button>
+                  <Link
+                    to="/"
+                    className="block text-center text-blue-500 hover:text-blue-600 underline"
+                  >
+                    Back to Registration
+                  </Link>
                 </div>
-              </form>
+              </div>
             ) : (
-              <div className="mt-6">
-                <h3 className="text-lg font-semibold mb-4">Registration Complete!</h3>
-                <div className="flex flex-col items-center">
-                  {qrCodeData && (
-                    <>
-                      <QRCode
-                        id="qr-code"
-                        value={qrCodeData}
-                        size={256}
-                        level="H"
-                        className="mb-4"
-                      />
-                      <button
-                        onClick={downloadQRCode}
-                        className="flex items-center space-x-2 mb-4 bg-green-500 text-white px-4 py-2 rounded-md hover:bg-green-600"
-                      >
-                        <Download size={20} />
-                        <span>Download QR Code</span>
-                      </button>
-                    </>
-                  )}
-                  <div className="space-y-4 w-full">
-                    <Link
-                      to="/scan"
-                      className="block text-center text-blue-500 hover:text-blue-600 underline mb-2"
-                    >
-                      Go to Scanner
-                    </Link>
-                    <button
-                      onClick={resetForm}
-                      className="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600 w-full"
-                    >
-                      Register Another Person
-                    </button>
-                  </div>
-                </div>
+              <div>
+                <div id="reader" className="mb-4"></div>
+                <Link
+                  to="/"
+                  className="block text-center text-blue-500 hover:text-blue-600 underline"
+                >
+                  Back to Registration
+                </Link>
               </div>
             )}
           </div>
@@ -222,4 +139,4 @@ function RegistrationForm() {
   );
 }
 
-export default RegistrationForm;
+export default QRScanner;
