@@ -1,154 +1,105 @@
-import { useState, useEffect } from 'react';
-import { Html5Qrcode } from 'html5-qrcode';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import QRCode from 'qrcode.react';
 import { db } from './firebase';
-import { doc, getDoc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { collection, addDoc, query, where, getDocs } from 'firebase/firestore';
+import { Download } from 'lucide-react';
 
-function QRScanner() {
-  const [scanResult, setScanResult] = useState(null);
+function RegistrationForm() {
+  const [formData, setFormData] = useState({
+    firstName: '',
+    lastName: '',
+    phone: '',
+    email: ''
+  });
+  const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState('');
-  const [isScanning, setIsScanning] = useState(false);
-  const [checkInStatus, setCheckInStatus] = useState('');
-  const [cameraList, setCameraList] = useState([]);
-  const [selectedCamera, setSelectedCamera] = useState('');
-  const [debugInfo, setDebugInfo] = useState('');
+  const [qrCodeData, setQrCodeData] = useState('');
+  const [registrationId, setRegistrationId] = useState('');
 
-  const addDebugInfo = (info) => {
-    setDebugInfo(prev => `${prev}\n${info}`);
-    console.log(info);
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: value
+    }));
   };
 
-  useEffect(() => {
-    // List available cameras on component mount
-    const getCameras = async () => {
-      try {
-        addDebugInfo('Requesting camera list...');
-        const devices = await Html5Qrcode.getCameras();
-        addDebugInfo(`Found ${devices.length} cameras`);
-        setCameraList(devices);
-        if (devices.length > 0) {
-          setSelectedCamera(devices[devices.length - 1].id); // Usually back camera
-        }
-        devices.forEach(device => {
-          addDebugInfo(`Camera: ${device.label} (${device.id})`);
-        });
-      } catch (err) {
-        addDebugInfo(`Error getting cameras: ${err.message}`);
-        setError(`Error accessing cameras: ${err.message}`);
-      }
-    };
-
-    getCameras();
-  }, []);
-
-  const startScanning = async () => {
-    try {
-      addDebugInfo('Starting scanner...');
-      setError('');
-      setIsScanning(true);
-
-      if (!selectedCamera) {
-        throw new Error('No camera selected');
-      }
-
-      addDebugInfo(`Initializing scanner with camera: ${selectedCamera}`);
-      const html5QrCode = new Html5Qrcode("reader");
-
-      const config = {
-        fps: 10,
-        qrbox: { width: 250, height: 250 },
-        aspectRatio: 1.0,
-        formatsToSupport: [Html5Qrcode.QrFormat.QR_CODE]
-      };
-
-      addDebugInfo('Starting camera stream...');
-      await html5QrCode.start(
-        selectedCamera,
-        config,
-        async (decodedText) => {
-          addDebugInfo(`QR Code detected: ${decodedText}`);
-          await handleScanSuccess(decodedText, html5QrCode);
-        },
-        (errorMessage) => {
-          addDebugInfo(`Scanning error: ${errorMessage}`);
-        }
-      );
-
-      addDebugInfo('Scanner started successfully');
-    } catch (err) {
-      addDebugInfo(`Error in startScanning: ${err.message}`);
-      setError(`Failed to start scanner: ${err.message}`);
-      setIsScanning(false);
-    }
-  };
-
-  const handleScanSuccess = async (result, scanner) => {
-    try {
-      addDebugInfo('Processing scan result...');
-      const scannedData = JSON.parse(result);
-      
-      if (!scannedData.id) {
-        throw new Error('Invalid QR code format: missing ID');
-      }
-
-      const docRef = doc(db, "registrations", scannedData.id);
-      const docSnap = await getDoc(docRef);
-
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        
-        if (data.email === scannedData.email) {
-          const now = new Date();
-          const checkInData = {
-            timestamp: now.toISOString(),
-            date: now.toLocaleDateString(),
-            time: now.toLocaleTimeString()
-          };
-
-          await updateDoc(docRef, {
-            checkIns: arrayUnion(checkInData),
-            totalCheckIns: (data.totalCheckIns || 0) + 1,
-            lastCheckIn: checkInData
-          });
-
-          if (scanner) {
-            await scanner.stop();
-          }
-          setIsScanning(false);
-          setScanResult({
-            ...data,
-            lastCheckIn: checkInData,
-            totalCheckIns: (data.totalCheckIns || 0) + 1
-          });
-          setCheckInStatus('Check-in successful!');
-          addDebugInfo('Check-in processed successfully');
-        } else {
-          setError('Invalid QR code data: email mismatch');
-        }
-      } else {
-        setError('Registration not found in database');
-      }
-    } catch (err) {
-      addDebugInfo(`Error processing scan: ${err.message}`);
-      setError(`Error processing QR code: ${err.message}`);
-    }
-  };
-
-  const handleReset = async () => {
-    addDebugInfo('Resetting scanner...');
-    try {
-      const html5QrCode = new Html5Qrcode("reader");
-      if (html5QrCode) {
-        await html5QrCode.stop();
-      }
-    } catch (err) {
-      addDebugInfo(`Error in reset: ${err.message}`);
-    }
-    setScanResult(null);
+  const handleSubmit = async (e) => {
+    e.preventDefault();
     setError('');
-    setCheckInStatus('');
-    setIsScanning(false);
-    setDebugInfo('');
+    console.log('Form submission started');
+    
+    try {
+      // Check for existing email
+      console.log('Checking for duplicate email:', formData.email);
+      const registrationsRef = collection(db, "registrations");
+      const q = query(registrationsRef, where("email", "==", formData.email));
+      const querySnapshot = await getDocs(q);
+      
+      if (!querySnapshot.empty) {
+        console.log('Duplicate email found');
+        setError('This email is already registered.');
+        return;
+      }
+
+      console.log('Adding new registration to Firestore');
+      // Add new registration with check-in history
+      const docRef = await addDoc(registrationsRef, {
+        ...formData,
+        timestamp: new Date().toISOString(),
+        status: 'active',
+        checkIns: [], // Array to store check-in history
+        totalCheckIns: 0,
+        lastCheckIn: null
+      });
+
+      console.log('Document written with ID:', docRef.id);
+      setRegistrationId(docRef.id);
+
+      // Create QR code data
+      const qrData = {
+        id: docRef.id,
+        ...formData
+      };
+      
+      setQrCodeData(JSON.stringify(qrData));
+      setSubmitted(true);
+      console.log('Registration completed successfully');
+      
+    } catch (error) {
+      console.error('Error in form submission:', error);
+      setError('Failed to submit form. Please try again. Error: ' + error.message);
+    }
+  };
+
+  const downloadQRCode = () => {
+    const canvas = document.getElementById("qr-code");
+    if (canvas) {
+      const pngUrl = canvas
+        .toDataURL("image/png")
+        .replace("image/png", "image/octet-stream");
+      
+      const downloadLink = document.createElement("a");
+      downloadLink.href = pngUrl;
+      downloadLink.download = `qrcode-${formData.firstName}-${formData.lastName}.png`;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
+    }
+  };
+
+  const resetForm = () => {
+    setFormData({
+      firstName: '',
+      lastName: '',
+      phone: '',
+      email: ''
+    });
+    setSubmitted(false);
+    setQrCodeData('');
+    setError('');
+    setRegistrationId('');
   };
 
   return (
@@ -156,92 +107,112 @@ function QRScanner() {
       <div className="relative py-3 sm:max-w-xl sm:mx-auto">
         <div className="relative px-4 py-10 bg-white mx-8 md:mx-0 shadow rounded-3xl sm:p-10">
           <div className="max-w-md mx-auto">
-            <h2 className="text-2xl font-semibold mb-6">QR Code Scanner</h2>
+            <div className="flex items-center space-x-5">
+              <div className="block pl-2 font-semibold text-xl self-start text-gray-700">
+                <h2 className="leading-relaxed">Registration Form</h2>
+              </div>
+            </div>
             
-            {/* Debug Information */}
-            {debugInfo && (
-              <div className="mb-4 p-3 bg-gray-100 text-gray-700 rounded-md text-sm font-mono whitespace-pre-wrap">
-                Debug Info:
-                {debugInfo}
+            {error && (
+              <div className="mt-4 p-3 bg-red-100 text-red-700 rounded-md">
+                {error}
               </div>
             )}
 
-            {error && (
-              <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-md">
-                {error}
-                <button
-                  onClick={handleReset}
-                  className="block w-full mt-2 text-center text-red-700 underline"
-                >
-                  Try Again
-                </button>
-              </div>
-            )}
-            
-            {scanResult ? (
-              <div className="space-y-4">
-                {checkInStatus && (
-                  <div className="p-3 bg-green-100 text-green-700 rounded-md mb-4">
-                    {checkInStatus}
+            {!submitted ? (
+              <form onSubmit={handleSubmit} className="divide-y divide-gray-200">
+                <div className="py-8 text-base leading-6 space-y-4 text-gray-700 sm:text-lg sm:leading-7">
+                  <div className="flex flex-col">
+                    <label className="leading-loose">First Name</label>
+                    <input
+                      type="text"
+                      name="firstName"
+                      value={formData.firstName}
+                      onChange={handleChange}
+                      className="px-4 py-2 border focus:ring-gray-500 focus:border-gray-900 w-full sm:text-sm border-gray-300 rounded-md focus:outline-none text-gray-600"
+                      required
+                    />
                   </div>
-                )}
-                <h3 className="text-lg font-medium">Scanned Data:</h3>
-                <div className="bg-gray-50 p-4 rounded-lg">
-                  <p><strong>First Name:</strong> {scanResult.firstName}</p>
-                  <p><strong>Last Name:</strong> {scanResult.lastName}</p>
-                  <p><strong>Email:</strong> {scanResult.email}</p>
-                  <p><strong>Phone:</strong> {scanResult.phone}</p>
-                  <p><strong>Total Check-ins:</strong> {scanResult.totalCheckIns}</p>
-                  <p><strong>Last Check-in:</strong> {scanResult.lastCheckIn?.date} at {scanResult.lastCheckIn?.time}</p>
+                  <div className="flex flex-col">
+                    <label className="leading-loose">Last Name</label>
+                    <input
+                      type="text"
+                      name="lastName"
+                      value={formData.lastName}
+                      onChange={handleChange}
+                      className="px-4 py-2 border focus:ring-gray-500 focus:border-gray-900 w-full sm:text-sm border-gray-300 rounded-md focus:outline-none text-gray-600"
+                      required
+                    />
+                  </div>
+                  <div className="flex flex-col">
+                    <label className="leading-loose">Phone Number</label>
+                    <input
+                      type="tel"
+                      name="phone"
+                      value={formData.phone}
+                      onChange={handleChange}
+                      className="px-4 py-2 border focus:ring-gray-500 focus:border-gray-900 w-full sm:text-sm border-gray-300 rounded-md focus:outline-none text-gray-600"
+                      required
+                    />
+                  </div>
+                  <div className="flex flex-col">
+                    <label className="leading-loose">Email</label>
+                    <input
+                      type="email"
+                      name="email"
+                      value={formData.email}
+                      onChange={handleChange}
+                      className="px-4 py-2 border focus:ring-gray-500 focus:border-gray-900 w-full sm:text-sm border-gray-300 rounded-md focus:outline-none text-gray-600"
+                      required
+                    />
+                  </div>
                 </div>
-                <div className="space-y-2">
+                <div className="pt-4 flex items-center space-x-4">
                   <button
-                    onClick={handleReset}
-                    className="block w-full bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600 transition-colors"
+                    type="submit"
+                    className="bg-blue-500 flex justify-center items-center w-full text-white px-4 py-3 rounded-md focus:outline-none hover:bg-blue-600"
                   >
-                    Scan Another Code
+                    Submit
                   </button>
-                  <Link
-                    to="/"
-                    className="block text-center text-blue-500 hover:text-blue-600 underline"
-                  >
-                    Back to Registration
-                  </Link>
                 </div>
-              </div>
+              </form>
             ) : (
-              <div>
-                <div id="reader" className="mb-4"></div>
-                {cameraList.length > 0 && !isScanning && (
-                  <div className="mb-4">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Select Camera
-                    </label>
-                    <select
-                      value={selectedCamera}
-                      onChange={(e) => setSelectedCamera(e.target.value)}
-                      className="w-full p-2 border rounded-md mb-4"
+              <div className="mt-6">
+                <h3 className="text-lg font-semibold mb-4">Registration Complete!</h3>
+                <div className="flex flex-col items-center">
+                  {qrCodeData && (
+                    <>
+                      <QRCode
+                        id="qr-code"
+                        value={qrCodeData}
+                        size={256}
+                        level="H"
+                        className="mb-4"
+                      />
+                      <button
+                        onClick={downloadQRCode}
+                        className="flex items-center space-x-2 mb-4 bg-green-500 text-white px-4 py-2 rounded-md hover:bg-green-600"
+                      >
+                        <Download size={20} />
+                        <span>Download QR Code</span>
+                      </button>
+                    </>
+                  )}
+                  <div className="space-y-4 w-full">
+                    <Link
+                      to="/scan"
+                      className="block text-center text-blue-500 hover:text-blue-600 underline mb-2"
                     >
-                      {cameraList.map((camera) => (
-                        <option key={camera.id} value={camera.id}>
-                          {camera.label || `Camera ${camera.id}`}
-                        </option>
-                      ))}
-                    </select>
+                      Go to Scanner
+                    </Link>
                     <button
-                      onClick={startScanning}
-                      className="block w-full bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600 transition-colors"
+                      onClick={resetForm}
+                      className="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600 w-full"
                     >
-                      Start Scanner
+                      Register Another Person
                     </button>
                   </div>
-                )}
-                <Link
-                  to="/"
-                  className="block text-center text-blue-500 hover:text-blue-600 underline"
-                >
-                  Back to Registration
-                </Link>
+                </div>
               </div>
             )}
           </div>
@@ -251,4 +222,4 @@ function QRScanner() {
   );
 }
 
-export default QRScanner;
+export default RegistrationForm;
